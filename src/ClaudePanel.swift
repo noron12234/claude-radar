@@ -44,12 +44,12 @@ enum Style {
 
     static func label(_ state: String) -> String {
         switch state {
-        case "permission": return "等你授權"
-        case "waiting":    return "等你回覆"
-        case "done":       return "做完了"
-        case "busy":       return "在跑"
-        case "noclaude":   return "無 Claude"
-        default:           return "閒置"
+        case "permission": return "needs you"
+        case "waiting":    return "asking you"
+        case "done":       return "done"
+        case "busy":       return "running"
+        case "noclaude":   return "no agent"
+        default:           return "idle"
         }
     }
 
@@ -70,10 +70,10 @@ func ago(_ iso: String) -> String {
     }
     guard let d = date else { return "" }
     let s = Int(Date().timeIntervalSince(d))
-    if s < 60 { return "剛剛" }
-    if s < 3600 { return "\(s / 60) 分前" }
-    if s < 86400 { return "\(s / 3600) 小時前" }
-    return "\(s / 86400) 天前"
+    if s < 60 { return "just now" }
+    if s < 3600 { return "\(s / 60)m ago" }
+    if s < 86400 { return "\(s / 3600)h ago" }
+    return "\(s / 86400)d ago"
 }
 
 // MARK: - 狀態圓點
@@ -450,10 +450,10 @@ final class Controller: NSObject, NSApplicationDelegate {
 
         // 橋接停了的話清單會變舊、點了也不會跳。與其靜默失效，不如講出來。
         if bridgeStale() {
-            countLabel.stringValue = "橋接停止 · 開新分頁即復原"
+            countLabel.stringValue = "bridge stopped · open a new tab"
             countLabel.textColor = .systemOrange
         } else {
-            countLabel.stringValue = pending > 0 ? "\(pending) 個等你" : "\(all.count) 個分頁"
+            countLabel.stringValue = pending > 0 ? "\(pending) waiting" : "\(all.count) tabs"
             countLabel.textColor = pending > 0 ? .systemRed : .tertiaryLabelColor
         }
 
@@ -463,7 +463,7 @@ final class Controller: NSObject, NSApplicationDelegate {
         }
 
         if shown.isEmpty {
-            let empty = NSTextField(labelWithString: "沒有開著的分頁")
+            let empty = NSTextField(labelWithString: "no tabs")
             empty.font = .systemFont(ofSize: 11)
             empty.textColor = .tertiaryLabelColor
             let wrap = NSView()

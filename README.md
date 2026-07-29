@@ -6,19 +6,13 @@ If you run one Claude Code session, you don't need this. If you run eight, you s
 your day cycling through tabs asking *"is this one done yet?"* — and missing the one
 that quietly asked you a question twenty minutes ago.
 
-```
-┌──────────────────────────────────┐
-│  CLAUDE                5 waiting │
-├──────────────────────────────────┤
-│  ● refactor auth      needs perm │  ← purple: blocked on a permission prompt
-│  ● fix flaky test     asking you │  ← orange: asked you a question
-│  ────────────────────────────────│  ← split matches your terminal layout
-│  ● migrate schema        running │  ← blue: actually generating
-│  ● write release notes      done │  ← red: finished, waiting on you
-│  ○ scratch                  idle │
-└──────────────────────────────────┘
-        click any row → that tab is focused
-```
+<p align="center">
+  <img src="docs/demo.gif" width="544" alt="claude-radar panel: sessions changing state in real time">
+</p>
+
+Blue is generating. Red finished and is waiting on you. Orange asked you a question.
+Purple is blocked on a permission prompt and cannot move until you answer. The
+divider is a split in your terminal — rows sit in exactly the order your tabs do.
 
 It floats above fullscreen apps, survives Focus mode, and never steals your keyboard.
 
