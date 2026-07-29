@@ -81,7 +81,7 @@ anything changes, and you lose the muscle memory that makes it fast.
 Requires macOS, [cmux](https://cmux.dev), and Claude Code.
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/claude-radar.git
+git clone https://github.com/noron12234/claude-radar.git
 cd claude-radar && ./install.sh
 ```
 
