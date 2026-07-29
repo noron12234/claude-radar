@@ -94,6 +94,21 @@ Also included: `ccq`, a terminal version of the same board.
  3  ○ idle         scratch
 ```
 
+## Work timer
+
+The bottom row tracks how long you have been working. Click it to pause, click again
+to resume. After 20 minutes of continuous work it turns yellow and tells you to look
+away for 20 seconds — the reminder shows up *in the panel*, because the whole point of
+this project is that notifications don't. Option-click resets the total.
+
+## Language
+
+English by default. For a Chinese UI:
+
+```bash
+defaults write claude-panel lang zh
+```
+
 ## Uninstall
 
 ```bash

@@ -24,13 +24,21 @@ struct Row: Decodable {
     let workspace: String? // tmux 的 session 名稱
 }
 
+/// 介面語言。預設英文；個人使用可切中文：
+///     defaults write claude-panel lang zh
+enum L {
+    static let zh = UserDefaults.standard.string(forKey: "lang") == "zh"
+    static func t(_ en: String, _ cn: String) -> String { zh ? cn : en }
+}
+
 enum Style {
-    static let width: CGFloat = 272
+    static let width: CGFloat = 320
     static let rowHeight: CGFloat = 34
     static let headerHeight: CGFloat = 30
     static let padding: CGFloat = 8
     static let maxRows = 18       // 分頁全列出來，順序照 cmux 排列
     static let dividerHeight: CGFloat = 9   // 分割窗之間的分隔
+    static let timerHeight: CGFloat = 30    // 底部工時列
 
     static func tint(_ state: String) -> NSColor {
         switch state {
@@ -44,12 +52,12 @@ enum Style {
 
     static func label(_ state: String) -> String {
         switch state {
-        case "permission": return "needs you"
-        case "waiting":    return "asking you"
-        case "done":       return "done"
-        case "busy":       return "running"
-        case "noclaude":   return "no agent"
-        default:           return "idle"
+        case "permission": return L.t("needs you", "等你授權")
+        case "waiting":    return L.t("asking you", "等你回覆")
+        case "done":       return L.t("done", "做完了")
+        case "busy":       return L.t("running", "在跑")
+        case "noclaude":   return L.t("no agent", "無 Claude")
+        default:           return L.t("idle", "閒置")
         }
     }
 
@@ -70,10 +78,10 @@ func ago(_ iso: String) -> String {
     }
     guard let d = date else { return "" }
     let s = Int(Date().timeIntervalSince(d))
-    if s < 60 { return "just now" }
-    if s < 3600 { return "\(s / 60)m ago" }
-    if s < 86400 { return "\(s / 3600)h ago" }
-    return "\(s / 86400)d ago"
+    if s < 60 { return L.t("just now", "剛剛") }
+    if s < 3600 { return L.t("\(s / 60)m ago", "\(s / 60) 分前") }
+    if s < 86400 { return L.t("\(s / 3600)h ago", "\(s / 3600) 小時前") }
+    return L.t("\(s / 86400)d ago", "\(s / 86400) 天前")
 }
 
 // MARK: - 狀態圓點
@@ -142,13 +150,24 @@ final class RowView: NSView {
         title.maximumNumberOfLines = 1
         title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        let stateText = Style.needsAttention(row.state)
-            ? [Style.label(row.state), ago(row.ts)].filter { !$0.isEmpty }.joined(separator: " · ")
-            : Style.label(row.state)
-        let meta = NSTextField(labelWithString: stateText)
-        meta.font = .systemFont(ofSize: 10,
-                                weight: Style.needsAttention(row.state) ? .semibold : .medium)
-        meta.textColor = Style.tint(row.state)
+        let attention = Style.needsAttention(row.state)
+        let tint = Style.tint(row.state)
+        let meta = NSTextField(labelWithString: "")
+        meta.attributedStringValue = {
+            let text = NSMutableAttributedString()
+            text.append(NSAttributedString(
+                string: Style.label(row.state),
+                attributes: [.font: NSFont.systemFont(ofSize: 10,
+                                                      weight: attention ? .semibold : .medium),
+                             .foregroundColor: tint]))
+            if attention, !ago(row.ts).isEmpty {
+                text.append(NSAttributedString(
+                    string: " · " + ago(row.ts),
+                    attributes: [.font: NSFont.systemFont(ofSize: 9.5),
+                                 .foregroundColor: tint.withAlphaComponent(0.6)]))
+            }
+            return text
+        }()
         meta.setContentCompressionResistancePriority(.required, for: .horizontal)
         meta.setContentHuggingPriority(.required, for: .horizontal)
 
@@ -240,6 +259,155 @@ final class RowView: NSView {
     }
 }
 
+
+// MARK: - 工時計時
+
+/// 累計工作時間，並在連續工作太久時提醒休息眼睛。
+///
+/// 提醒不走系統通知 —— 這整個專案存在的原因就是通知不會顯示。
+/// 改成讓計時那一列自己變色，反正面板本來就一直在你眼前。
+final class WorkTimer {
+    static let breakAfter: TimeInterval = 20 * 60   // 20-20-20 法則
+    static let breakLength: TimeInterval = 20       // 看遠方 20 秒
+
+    private let defaults = UserDefaults.standard
+    private let kAccumulated = "timerAccumulated"
+    private let kStartedAt = "timerStartedAt"
+    private let kSinceBreak = "timerSinceBreak"
+
+    /// 累計總工時（含目前這段）
+    var total: TimeInterval {
+        var t = defaults.double(forKey: kAccumulated)
+        if let started = startedAt { t += Date().timeIntervalSince(started) }
+        return t
+    }
+
+    /// 距離上次休息累積了多久
+    var sinceBreak: TimeInterval {
+        var t = defaults.double(forKey: kSinceBreak)
+        if let started = startedAt { t += Date().timeIntervalSince(started) }
+        return t
+    }
+
+    var running: Bool { startedAt != nil }
+    var needsBreak: Bool { running && sinceBreak >= Self.breakAfter }
+
+    private var startedAt: Date? {
+        get { defaults.object(forKey: kStartedAt) as? Date }
+        set { defaults.set(newValue, forKey: kStartedAt) }
+    }
+
+    func toggle() {
+        if let started = startedAt {
+            let span = Date().timeIntervalSince(started)
+            defaults.set(defaults.double(forKey: kAccumulated) + span, forKey: kAccumulated)
+            defaults.set(defaults.double(forKey: kSinceBreak) + span, forKey: kSinceBreak)
+            startedAt = nil
+            // 暫停就當成休息了：夠長才把眼睛的計時歸零
+            if span >= 0 || true { }
+        } else {
+            // 重新開始 = 剛休息完，眼睛計時歸零
+            defaults.set(0.0, forKey: kSinceBreak)
+            startedAt = Date()
+        }
+    }
+
+    /// 整個歸零（option-click）
+    func reset() {
+        defaults.set(0.0, forKey: kAccumulated)
+        defaults.set(0.0, forKey: kSinceBreak)
+        startedAt = nil
+    }
+
+    static func format(_ t: TimeInterval) -> String {
+        let s = Int(max(0, t))
+        return s >= 3600
+            ? String(format: "%d:%02d:%02d", s / 3600, (s % 3600) / 60, s % 60)
+            : String(format: "%02d:%02d", s / 60, s % 60)
+    }
+}
+
+/// 底部那一列：工時 + 點擊暫停/繼續 + 休息提醒。
+final class TimerRow: NSView {
+    private let timer: WorkTimer
+    private let onToggle: () -> Void
+    private let onReset: () -> Void
+    private let icon = NSTextField(labelWithString: "")
+    private let time = NSTextField(labelWithString: "")
+    private let note = NSTextField(labelWithString: "")
+
+    init(timer: WorkTimer, onToggle: @escaping () -> Void, onReset: @escaping () -> Void) {
+        self.timer = timer
+        self.onToggle = onToggle
+        self.onReset = onReset
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.cornerRadius = 7
+        build()
+        refresh()
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    private func build() {
+        icon.font = .systemFont(ofSize: 11)
+        time.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+        note.font = .systemFont(ofSize: 9.5)
+        note.lineBreakMode = .byTruncatingTail
+
+        let stack = NSStackView(views: [icon, time, note])
+        stack.orientation = .horizontal
+        stack.alignment = .centerY
+        stack.spacing = 6
+        stack.edgeInsets = NSEdgeInsets(top: 0, left: 9, bottom: 0, right: 9)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor),
+            stack.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+    }
+
+    func refresh() {
+        time.stringValue = WorkTimer.format(timer.total)
+
+        if timer.needsBreak {
+            icon.stringValue = "👁"
+            time.textColor = .systemYellow
+            note.stringValue = L.t("look 20ft away for 20s", "看遠方 20 秒，休息眼睛")
+            note.textColor = .systemYellow
+            layer?.backgroundColor = NSColor.systemYellow.withAlphaComponent(0.16).cgColor
+        } else if timer.running {
+            icon.stringValue = "▮▮"
+            time.textColor = .labelColor
+            let left = WorkTimer.breakAfter - timer.sinceBreak
+            note.stringValue = L.t("working · break in \(Int(left / 60))m",
+                                   "工作中 · 還有 \(Int(left / 60)) 分該休息")
+            note.textColor = .tertiaryLabelColor
+            layer?.backgroundColor = NSColor.clear.cgColor
+        } else {
+            icon.stringValue = "▶"
+            time.textColor = .secondaryLabelColor
+            note.stringValue = L.t("paused · click to resume", "已暫停 · 點一下繼續")
+            note.textColor = .tertiaryLabelColor
+            layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.05).cgColor
+        }
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override func mouseDown(with event: NSEvent) {}
+
+    override func mouseUp(with event: NSEvent) {
+        guard bounds.contains(convert(event.locationInWindow, from: nil)) else { return }
+        if event.modifierFlags.contains(.option) {
+            onReset()
+        } else {
+            onToggle()
+        }
+    }
+}
+
 // MARK: - 面板
 
 final class Panel: NSPanel {
@@ -257,6 +425,9 @@ final class Controller: NSObject, NSApplicationDelegate {
     private var lastPayload = ""
     private var lastStale = false
     private var lastRows: [Row] = []
+    private let workTimer = WorkTimer()
+    private var timerRow: TimerRow!
+    private var tick: Timer?
     private var signalSource: DispatchSourceSignal?
 
     private let ccq = NSHomeDirectory() + "/.claude/tools/ccq.py"
@@ -285,6 +456,9 @@ final class Controller: NSObject, NSApplicationDelegate {
         refresh()
         // 每次輪詢會 spawn python + 跑 ps -A（機器上有近 300 個行程），
         // 2 秒一次太密會讓面板一頓一頓的，3 秒足夠即時又不吃 CPU。
+        tick = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            self?.timerRow.refresh()
+        }
         timer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
             self?.refresh()
         }
@@ -334,7 +508,18 @@ final class Controller: NSObject, NSApplicationDelegate {
         content.alignment = .leading
         content.spacing = 1
 
-        let root = NSStackView(views: [header, content])
+        timerRow = TimerRow(timer: workTimer,
+                            onToggle: { [weak self] in
+                                self?.workTimer.toggle()
+                                self?.timerRow.refresh()
+                            },
+                            onReset: { [weak self] in
+                                self?.workTimer.reset()
+                                self?.timerRow.refresh()
+                            })
+        timerRow.translatesAutoresizingMaskIntoConstraints = false
+
+        let root = NSStackView(views: [header, content, timerRow])
         root.orientation = .vertical
         root.alignment = .leading
         root.spacing = 4
@@ -349,6 +534,8 @@ final class Controller: NSObject, NSApplicationDelegate {
             header.heightAnchor.constraint(equalToConstant: Style.headerHeight - 12),
             header.widthAnchor.constraint(equalTo: root.widthAnchor),
             content.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -8),
+            timerRow.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -8),
+            timerRow.heightAnchor.constraint(equalToConstant: Style.timerHeight),
         ])
 
         panel.setFrameOrigin(savedOrigin())
@@ -450,10 +637,12 @@ final class Controller: NSObject, NSApplicationDelegate {
 
         // 橋接停了的話清單會變舊、點了也不會跳。與其靜默失效，不如講出來。
         if bridgeStale() {
-            countLabel.stringValue = "bridge stopped · open a new tab"
+            countLabel.stringValue = L.t("bridge stopped · open a new tab", "橋接停止 · 開新分頁即復原")
             countLabel.textColor = .systemOrange
         } else {
-            countLabel.stringValue = pending > 0 ? "\(pending) waiting" : "\(all.count) tabs"
+            countLabel.stringValue = pending > 0
+                ? L.t("\(pending) waiting", "\(pending) 個等你")
+                : L.t("\(all.count) tabs", "\(all.count) 個分頁")
             countLabel.textColor = pending > 0 ? .systemRed : .tertiaryLabelColor
         }
 
@@ -463,7 +652,7 @@ final class Controller: NSObject, NSApplicationDelegate {
         }
 
         if shown.isEmpty {
-            let empty = NSTextField(labelWithString: "no tabs")
+            let empty = NSTextField(labelWithString: L.t("no tabs", "沒有分頁"))
             empty.font = .systemFont(ofSize: 11)
             empty.textColor = .tertiaryLabelColor
             let wrap = NSView()
@@ -510,7 +699,7 @@ final class Controller: NSObject, NSApplicationDelegate {
             ? 28
             : CGFloat(shown.count) * (Style.rowHeight + 1)
               + CGFloat(dividers) * (Style.dividerHeight + 1)
-        let height = Style.headerHeight + bodyHeight + Style.padding * 2
+        let height = Style.headerHeight + bodyHeight + Style.timerHeight + Style.padding * 2 + 4
         let top = panel.frame.maxY
         let wanted = NSRect(x: panel.frame.origin.x, y: top - height,
                             width: Style.width, height: height)
