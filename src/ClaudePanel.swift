@@ -364,6 +364,27 @@ final class WorkTimer {
         started = nil
     }
 
+    /// 計時器現在有沒有在跑（休息中不算 —— 那段時間不進累積值）
+    var isRunning: Bool {
+        switch phase {
+        case .working, .breakDue: return true
+        case .paused, .resting:   return false
+        }
+    }
+
+    /// 明確停止計時。與 toggle() 不同：不會進入休息循環，就只是停住。
+    /// 休息中按下去 = 放棄這次休息並停止計時。
+    func pause() {
+        restUntil = nil
+        bank()
+    }
+
+    /// 從暫停（或休息）回到計時。這一段連續工時接著算，不歸零。
+    func resume() {
+        restUntil = nil
+        started = Date()
+    }
+
     func reset() {
         d.set(0.0, forKey: kTotal)
         d.set(0.0, forKey: kSegment)
@@ -379,8 +400,15 @@ final class WorkTimer {
     }
 }
 
+/// 面板不會被 activate，視窗不是 key 時第一下點擊預設會被吃掉當成「先聚焦」。
+/// 按鈕要跟那一列一樣接第一下，否則每次都得點兩下。
+final class FirstMouseButton: NSButton {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
 /// 底部那一列：左邊是這一段連續工時，右邊是累積總工時。
 /// 點一下切換工作／暫停；該休息時點下去進入休息，畫面會暗下來。
+/// 最右邊那顆按鈕只管暫停／繼續，不會把你推進休息循環。
 final class TimerRow: NSView {
     private let timer: WorkTimer
     private let onChange: () -> Void
@@ -388,6 +416,7 @@ final class TimerRow: NSView {
     private let time = NSTextField(labelWithString: "")
     private let note = NSTextField(labelWithString: "")
     private let totalLabel = NSTextField(labelWithString: "")
+    private let pauseButton = FirstMouseButton(title: "", target: nil, action: nil)
 
     init(timer: WorkTimer, onChange: @escaping () -> Void) {
         self.timer = timer
@@ -414,7 +443,15 @@ final class TimerRow: NSView {
         totalLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
         totalLabel.setContentHuggingPriority(.required, for: .horizontal)
 
-        let stack = NSStackView(views: [icon, time, note, totalLabel])
+        pauseButton.target = self
+        pauseButton.action = #selector(togglePause)
+        pauseButton.bezelStyle = .rounded
+        pauseButton.controlSize = .mini
+        pauseButton.font = .systemFont(ofSize: 10)
+        pauseButton.setContentHuggingPriority(.required, for: .horizontal)
+        pauseButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+        let stack = NSStackView(views: [icon, time, note, totalLabel, pauseButton])
         stack.orientation = .horizontal
         stack.alignment = .centerY
         stack.spacing = 6
@@ -435,6 +472,12 @@ final class TimerRow: NSView {
 
         totalLabel.stringValue = L.t("total ", "累計 ") + WorkTimer.format(timer.total)
         time.stringValue = WorkTimer.format(timer.segment)
+
+        let running = timer.isRunning
+        pauseButton.title = running ? L.t("pause", "暫停") : L.t("resume", "繼續")
+        pauseButton.toolTip = running
+            ? L.t("stop the timer", "停止計時")
+            : L.t("start the timer again", "繼續計時")
 
         switch timer.phase {
         case .resting:
@@ -469,6 +512,12 @@ final class TimerRow: NSView {
             layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.05).cgColor
         }
         return false
+    }
+
+    @objc private func togglePause() {
+        if timer.isRunning { timer.pause() } else { timer.resume() }
+        refresh()
+        onChange()
     }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
