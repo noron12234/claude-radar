@@ -112,7 +112,12 @@ def main():
     tab = me.get("title") or repo
     ws = me.get("workspace_title") or ""
 
-    if kind == "start":
+    if kind == "error":
+        # PostToolUseFailure：工具呼叫失敗。沒有這個的話，出錯的 session
+        # 因為最後一筆事件還是 start，會一直顯示成「在跑」。
+        body = (data.get("tool_name", "") or "") + " " + (data.get("error", "") or "")
+        body = " ".join(body.split())[:200]
+    elif kind == "start":
         # UserPromptSubmit：只記「這個分頁開始跑了」，不發通知。
         # 有這筆才能可靠判斷在跑 —— 原本靠分頁標題的 spinner 符號猜，
         # 那是顯示慣例不是執行狀態，跑完的分頁常被誤判成還在跑。

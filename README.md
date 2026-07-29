@@ -47,12 +47,17 @@ Each row reflects Claude Code's own lifecycle, captured via hooks:
 | `Stop` | done — waiting on you | red |
 | `Notification` | asking you a question | orange |
 | `Notification` (permission) | **blocked on a permission prompt** | purple |
+| `PostToolUseFailure` | a tool call failed | red, `failed` |
 | — | idle / no agent in this tab | grey |
 
 Two details that took a while to get right:
 
 - **Don't read the spinner in the tab title.** It's a display convention, not run
   state. Finished sessions keep spinning glyphs; you'll show "running" forever.
+- **A failed session keeps looking busy.** Without a `PostToolUseFailure` hook the
+  last event is still `UserPromptSubmit`, so a session that errored out shows as
+  running forever. The error state also has to win over the CPU check, because the
+  process is often still busy cleaning up after the failure.
 - **Hooks alone miss resumed work.** A session restarted by a loop, a scheduled
   wake-up, or a background task returning never fires `UserPromptSubmit`. So the
   process CPU is sampled as corroboration — over ~5% means generating, whatever the
@@ -96,10 +101,17 @@ Also included: `ccq`, a terminal version of the same board.
 
 ## Work timer
 
-The bottom row tracks how long you have been working. Click it to pause, click again
-to resume. After 20 minutes of continuous work it turns yellow and tells you to look
-away for 20 seconds — the reminder shows up *in the panel*, because the whole point of
-this project is that notifications don't. Option-click resets the total.
+The bottom row shows the current stretch of work on the left and your accumulated
+total on the right. Click to pause, click again to resume, option-click to reset.
+
+After 20 minutes of continuous work the row turns yellow. Click it and the session
+list dims to 18% for a 20-second countdown — look away from the screen — then the
+stretch counter resets and work time starts again on its own. The dimming is
+deliberately limited to the list: the first version faded the whole window and made
+the countdown itself unreadable.
+
+The reminder lives in the panel rather than in a notification, because the whole
+point of this project is that notifications don't show up.
 
 ## Language
 

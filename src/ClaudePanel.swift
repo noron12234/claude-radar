@@ -42,6 +42,7 @@ enum Style {
 
     static func tint(_ state: String) -> NSColor {
         switch state {
+        case "error":      return NSColor.systemRed
         case "permission": return NSColor.systemPurple   // 完全卡住，最該先處理
         case "waiting":    return NSColor.systemOrange
         case "done":       return NSColor.systemRed
@@ -52,6 +53,7 @@ enum Style {
 
     static func label(_ state: String) -> String {
         switch state {
+        case "error":      return L.t("failed", "出錯了")
         case "permission": return L.t("needs you", "等你授權")
         case "waiting":    return L.t("asking you", "等你回覆")
         case "done":       return L.t("done", "做完了")
@@ -62,7 +64,8 @@ enum Style {
     }
 
     static func needsAttention(_ state: String) -> Bool {
-        state == "waiting" || state == "done" || state == "permission"
+        state == "waiting" || state == "done"
+            || state == "permission" || state == "error"
     }
 }
 
@@ -270,53 +273,102 @@ final class WorkTimer {
     static let breakAfter: TimeInterval = 20 * 60   // 20-20-20 法則
     static let breakLength: TimeInterval = 20       // 看遠方 20 秒
 
-    private let defaults = UserDefaults.standard
-    private let kAccumulated = "timerAccumulated"
-    private let kStartedAt = "timerStartedAt"
-    private let kSinceBreak = "timerSinceBreak"
+    enum Phase { case working, paused, breakDue, resting }
 
-    /// 累計總工時（含目前這段）
+    private let d = UserDefaults.standard
+    private let kTotal = "timerTotal"       // 累積總工時（右邊那一區）
+    private let kSegment = "timerSegment"   // 這一段連續工作（左邊，休息後歸零）
+    private let kStarted = "timerStarted"
+    private let kRestUntil = "timerRestUntil"
+
+    private var started: Date? {
+        get { d.object(forKey: kStarted) as? Date }
+        set { d.set(newValue, forKey: kStarted) }
+    }
+
+    private var restUntil: Date? {
+        get { d.object(forKey: kRestUntil) as? Date }
+        set { d.set(newValue, forKey: kRestUntil) }
+    }
+
+    /// 這一段連續工作了多久 —— 休息結束會歸零重新計。
+    var segment: TimeInterval {
+        var t = d.double(forKey: kSegment)
+        if phase == .working || phase == .breakDue, let s = started {
+            t += Date().timeIntervalSince(s)
+        }
+        return t
+    }
+
+    /// 累積總工時，休息與暫停都不算。
     var total: TimeInterval {
-        var t = defaults.double(forKey: kAccumulated)
-        if let started = startedAt { t += Date().timeIntervalSince(started) }
+        var t = d.double(forKey: kTotal)
+        if phase == .working || phase == .breakDue, let s = started {
+            t += Date().timeIntervalSince(s)
+        }
         return t
     }
 
-    /// 距離上次休息累積了多久
-    var sinceBreak: TimeInterval {
-        var t = defaults.double(forKey: kSinceBreak)
-        if let started = startedAt { t += Date().timeIntervalSince(started) }
+    /// 休息剩幾秒
+    var restLeft: TimeInterval {
+        guard let until = restUntil else { return 0 }
+        return max(0, until.timeIntervalSinceNow)
+    }
+
+    var phase: Phase {
+        if let until = restUntil, until.timeIntervalSinceNow > 0 { return .resting }
+        guard started != nil else { return .paused }
+        return segmentRaw >= Self.breakAfter ? .breakDue : .working
+    }
+
+    private var segmentRaw: TimeInterval {
+        var t = d.double(forKey: kSegment)
+        if let s = started { t += Date().timeIntervalSince(s) }
         return t
     }
 
-    var running: Bool { startedAt != nil }
-    var needsBreak: Bool { running && sinceBreak >= Self.breakAfter }
-
-    private var startedAt: Date? {
-        get { defaults.object(forKey: kStartedAt) as? Date }
-        set { defaults.set(newValue, forKey: kStartedAt) }
+    /// 休息時間到了就自動收工、歸零、重新開始計這一段。
+    /// 呼叫端每秒 tick 一次，所以不需要另外排程。
+    func settleIfRestFinished() {
+        guard let until = restUntil, until.timeIntervalSinceNow <= 0 else { return }
+        restUntil = nil
+        d.set(0.0, forKey: kSegment)   // 休息好了 → 這一段重新計
+        started = Date()
     }
 
     func toggle() {
-        if let started = startedAt {
-            let span = Date().timeIntervalSince(started)
-            defaults.set(defaults.double(forKey: kAccumulated) + span, forKey: kAccumulated)
-            defaults.set(defaults.double(forKey: kSinceBreak) + span, forKey: kSinceBreak)
-            startedAt = nil
-            // 暫停就當成休息了：夠長才把眼睛的計時歸零
-            if span >= 0 || true { }
-        } else {
-            // 重新開始 = 剛休息完，眼睛計時歸零
-            defaults.set(0.0, forKey: kSinceBreak)
-            startedAt = Date()
+        switch phase {
+        case .breakDue:
+            // 該休息了：按下去進入休息，畫面會暗下來
+            bank()
+            restUntil = Date().addingTimeInterval(Self.breakLength)
+        case .resting:
+            // 休息中再按 = 提早結束休息
+            restUntil = nil
+            d.set(0.0, forKey: kSegment)
+            started = Date()
+        case .working:
+            bank()
+        case .paused:
+            started = Date()
         }
     }
 
-    /// 整個歸零（option-click）
+    /// 把目前這段時間結算進累積值，並停止計時
+    private func bank() {
+        if let s = started {
+            let span = Date().timeIntervalSince(s)
+            d.set(d.double(forKey: kTotal) + span, forKey: kTotal)
+            d.set(d.double(forKey: kSegment) + span, forKey: kSegment)
+        }
+        started = nil
+    }
+
     func reset() {
-        defaults.set(0.0, forKey: kAccumulated)
-        defaults.set(0.0, forKey: kSinceBreak)
-        startedAt = nil
+        d.set(0.0, forKey: kTotal)
+        d.set(0.0, forKey: kSegment)
+        started = nil
+        restUntil = nil
     }
 
     static func format(_ t: TimeInterval) -> String {
@@ -327,19 +379,19 @@ final class WorkTimer {
     }
 }
 
-/// 底部那一列：工時 + 點擊暫停/繼續 + 休息提醒。
+/// 底部那一列：左邊是這一段連續工時，右邊是累積總工時。
+/// 點一下切換工作／暫停；該休息時點下去進入休息，畫面會暗下來。
 final class TimerRow: NSView {
     private let timer: WorkTimer
-    private let onToggle: () -> Void
-    private let onReset: () -> Void
+    private let onChange: () -> Void
     private let icon = NSTextField(labelWithString: "")
     private let time = NSTextField(labelWithString: "")
     private let note = NSTextField(labelWithString: "")
+    private let totalLabel = NSTextField(labelWithString: "")
 
-    init(timer: WorkTimer, onToggle: @escaping () -> Void, onReset: @escaping () -> Void) {
+    init(timer: WorkTimer, onChange: @escaping () -> Void) {
         self.timer = timer
-        self.onToggle = onToggle
-        self.onReset = onReset
+        self.onChange = onChange
         super.init(frame: .zero)
         wantsLayer = true
         layer?.cornerRadius = 7
@@ -354,8 +406,15 @@ final class TimerRow: NSView {
         time.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
         note.font = .systemFont(ofSize: 9.5)
         note.lineBreakMode = .byTruncatingTail
+        note.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        let stack = NSStackView(views: [icon, time, note])
+        totalLabel.font = .monospacedDigitSystemFont(ofSize: 10, weight: .regular)
+        totalLabel.textColor = .tertiaryLabelColor
+        totalLabel.alignment = .right
+        totalLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+        totalLabel.setContentHuggingPriority(.required, for: .horizontal)
+
+        let stack = NSStackView(views: [icon, time, note, totalLabel])
         stack.orientation = .horizontal
         stack.alignment = .centerY
         stack.spacing = 6
@@ -369,30 +428,47 @@ final class TimerRow: NSView {
         ])
     }
 
-    func refresh() {
-        time.stringValue = WorkTimer.format(timer.total)
+    /// 每秒呼叫。回傳「是否處於休息中」，面板用它決定要不要把整個視窗調暗。
+    @discardableResult
+    func refresh() -> Bool {
+        timer.settleIfRestFinished()
 
-        if timer.needsBreak {
+        totalLabel.stringValue = L.t("total ", "累計 ") + WorkTimer.format(timer.total)
+        time.stringValue = WorkTimer.format(timer.segment)
+
+        switch timer.phase {
+        case .resting:
+            icon.stringValue = "👁"
+            time.stringValue = String(format: "%02d", Int(ceil(timer.restLeft)))
+            time.textColor = .systemTeal
+            note.stringValue = L.t("resting · look far away", "休息中 · 看遠方")
+            note.textColor = .systemTeal
+            layer?.backgroundColor = NSColor.systemTeal.withAlphaComponent(0.14).cgColor
+            return true
+
+        case .breakDue:
             icon.stringValue = "👁"
             time.textColor = .systemYellow
-            note.stringValue = L.t("look 20ft away for 20s", "看遠方 20 秒，休息眼睛")
+            note.stringValue = L.t("click to rest 20s", "點一下休息 20 秒")
             note.textColor = .systemYellow
             layer?.backgroundColor = NSColor.systemYellow.withAlphaComponent(0.16).cgColor
-        } else if timer.running {
+
+        case .working:
             icon.stringValue = "▮▮"
             time.textColor = .labelColor
-            let left = WorkTimer.breakAfter - timer.sinceBreak
-            note.stringValue = L.t("working · break in \(Int(left / 60))m",
-                                   "工作中 · 還有 \(Int(left / 60)) 分該休息")
+            let left = Int((WorkTimer.breakAfter - timer.segment) / 60)
+            note.stringValue = L.t("working · break in \(left)m", "工作中 · 還有 \(left) 分該休息")
             note.textColor = .tertiaryLabelColor
             layer?.backgroundColor = NSColor.clear.cgColor
-        } else {
+
+        case .paused:
             icon.stringValue = "▶"
             time.textColor = .secondaryLabelColor
             note.stringValue = L.t("paused · click to resume", "已暫停 · 點一下繼續")
             note.textColor = .tertiaryLabelColor
             layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.05).cgColor
         }
+        return false
     }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
@@ -401,10 +477,12 @@ final class TimerRow: NSView {
     override func mouseUp(with event: NSEvent) {
         guard bounds.contains(convert(event.locationInWindow, from: nil)) else { return }
         if event.modifierFlags.contains(.option) {
-            onReset()
+            timer.reset()
         } else {
-            onToggle()
+            timer.toggle()
         }
+        refresh()
+        onChange()
     }
 }
 
@@ -458,6 +536,7 @@ final class Controller: NSObject, NSApplicationDelegate {
         // 2 秒一次太密會讓面板一頓一頓的，3 秒足夠即時又不吃 CPU。
         tick = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             self?.timerRow.refresh()
+            self?.applyRestDimming()
         }
         timer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
             self?.refresh()
@@ -508,15 +587,9 @@ final class Controller: NSObject, NSApplicationDelegate {
         content.alignment = .leading
         content.spacing = 1
 
-        timerRow = TimerRow(timer: workTimer,
-                            onToggle: { [weak self] in
-                                self?.workTimer.toggle()
-                                self?.timerRow.refresh()
-                            },
-                            onReset: { [weak self] in
-                                self?.workTimer.reset()
-                                self?.timerRow.refresh()
-                            })
+        timerRow = TimerRow(timer: workTimer) { [weak self] in
+            self?.applyRestDimming()
+        }
         timerRow.translatesAutoresizingMaskIntoConstraints = false
 
         let root = NSStackView(views: [header, content, timerRow])
@@ -794,6 +867,20 @@ final class Controller: NSObject, NSApplicationDelegate {
         }
         return "/usr/bin/tmux"
     }()
+
+    /// 休息時把工作清單調暗，但計時列維持清晰。
+    ///
+    /// 一開始是把整個視窗調暗，結果連「休息中 · 看遠方」的倒數都看不見了——
+    /// 那個提醒本身就是唯一還需要被看到的東西。
+    private func applyRestDimming() {
+        let wanted: CGFloat = workTimer.phase == .resting ? 0.18 : 1.0
+        if abs(content.alphaValue - wanted) > 0.01 {
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.4
+                content.animator().alphaValue = wanted
+            }
+        }
+    }
 
     private func bringCmuxToFront() {
         panel.resignKey()

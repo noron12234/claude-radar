@@ -19,12 +19,13 @@ import terminal as ctx  # noqa: E402
 LOG = os.path.expanduser("~/.claude/cc-done.log")
 
 STATES = {
-    "permission": (0, "\033[35m", "⛔ 等你授權"),
-    "waiting":    (1, "\033[33m", "🟠 等你回覆"),
-    "done":       (2, "\033[31m", "🔴 做完了"),
-    "busy":       (3, "\033[34m", "🔵 在跑"),
-    "idle":       (4, "\033[2m",  "·  閒置"),
-    "noclaude":   (5, "\033[2m",  "·  無 Claude"),
+    "error":      (0, "\033[31m", "⚠  出錯了"),
+    "permission": (1, "\033[35m", "⛔ 等你授權"),
+    "waiting":    (2, "\033[33m", "🟠 等你回覆"),
+    "done":       (3, "\033[31m", "🔴 做完了"),
+    "busy":       (4, "\033[34m", "🔵 在跑"),
+    "idle":       (5, "\033[2m",  "·  閒置"),
+    "noclaude":   (6, "\033[2m",  "·  無 Claude"),
 }
 
 
@@ -146,11 +147,15 @@ def collect():
         # 的情況（/loop、goal hook 續跑、背景任務回來）。
         if s["tty"] not in running:
             state = "noclaude"          # 分頁開著但裡面沒跑 Claude
+        elif kind == "error":
+            # 出錯要壓過 CPU 判定：工具失敗後行程往往還在忙著善後，
+            # 只看 CPU 會一直顯示「在跑」，錯誤就永遠不會浮出來。
+            state = "error"
         elif cpu >= BUSY_CPU:
             state = "busy"
         elif kind == "start":
             state = "busy"
-        elif kind in ("permission", "waiting", "done"):
+        elif kind in ("error", "permission", "waiting", "done"):
             state = kind
         elif s["busy"]:
             state = "busy"
