@@ -23,6 +23,12 @@ def _find_cmux():
 
 
 CMUX = _find_cmux()
+BACKEND = "cmux"
+
+
+def available():
+    """True when cmux is installed and has written a session file."""
+    return os.path.exists(SESSION_JSON)
 
 # tree --all 的行： │   ├── surface surface:222 [terminal] "⠂ 標題" [selected] ◀ here tty=ttys015
 SURFACE_RE = re.compile(
@@ -148,6 +154,7 @@ def tree():
     ids = panel_ids()
     for r in cached:
         r["panel_id"] = ids.get(r.get("tty", ""), r.get("panel_id", ""))
+        r.setdefault("backend", BACKEND)
     return cached
 
 
@@ -185,6 +192,7 @@ def _tree_from_cmux():
             "workspace_title": ws_title,
             "pane": pane_ref,
             "panel_id": ids.get(m.group(5) or "", ""),
+            "backend": BACKEND,
         })
     return rows
 
@@ -224,3 +232,25 @@ def me():
         except Exception:
             pass
     return {}
+
+
+def focus(row):
+    """Focus a cmux tab.
+
+    Goes through AppleScript, not the control socket. The socket only accepts
+    processes that are live descendants of the terminal, so anything long-running
+    in the background is rejected with a broken pipe forever. AppleScript has no
+    such restriction and lands in about 50ms.
+    """
+    uuid = row.get("panel_id", "")
+    if uuid:
+        script = f'tell application "cmux" to focus terminal id "{uuid}"'
+        if subprocess.run(["osascript", "-e", script],
+                          capture_output=True).returncode == 0:
+            return True
+
+    ws, ref = row.get("workspace", ""), row.get("surface", "")
+    if ws and ref:
+        run([CMUX, "select-workspace", "--workspace", ws])
+        return bool(run([CMUX, "focus-panel", "--panel", ref, "--workspace", ws]))
+    return False

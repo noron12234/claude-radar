@@ -16,22 +16,29 @@ import sys
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import cmux_ctx as ctx  # noqa: E402
+import terminal as ctx  # noqa: E402
 
 LOG = os.path.expanduser("~/.claude/cc-done.log")
 
 
-def notify(surface_ref, title, subtitle, body):
-    if surface_ref:
-        ctx.run([ctx.CMUX, "notify", "--surface", surface_ref, "--title", title,
-                 "--subtitle", subtitle, "--body", body or subtitle])
+def notify(title, subtitle, body):
+    """Best-effort desktop notification.
 
+    Kept only as a courtesy: on macOS this is routinely delivered and never
+    shown (Focus mode, the banner landing on a display you are not looking at,
+    or the terminal being frontmost). The panel is the reliable channel.
+    """
     def esc(s):
         return s.replace("\\", "\\\\").replace('"', '\\"')
 
-    ctx.run(["osascript", "-e",
+    try:
+        subprocess.run(
+            ["osascript", "-e",
              f'display notification "{esc(body or subtitle)}" '
-             f'with title "{esc(title)}" subtitle "{esc(subtitle)}"'])
+             f'with title "{esc(title)}" subtitle "{esc(subtitle)}"'],
+            capture_output=True, timeout=5)
+    except Exception:
+        pass
 
 
 def last_assistant_line(transcript_path, limit=110):
@@ -85,9 +92,7 @@ def drain_jump_request():
         return
     for r in ctx.tree():
         if r["surface"] == ref:
-            ctx.run([ctx.CMUX, "select-workspace", "--workspace", r["workspace"]])
-            ctx.run([ctx.CMUX, "focus-panel", "--panel", ref,
-                     "--workspace", r["workspace"]])
+            ctx.focus(r)
             return
 
 
@@ -121,12 +126,12 @@ def main():
             icon, state = "⛔", "等你授權"
         else:
             icon, state = "🔔", "在等你回覆"
-        notify(me.get("surface", ""), f"{icon} {tab}",
+        notify(f"{icon} {tab}",
                " · ".join(x for x in (state, ws, repo) if x), body)
     else:
         icon, state = "✅", "做完了"
         body = last_assistant_line(data.get("transcript_path"))
-        notify(me.get("surface", ""), f"{icon} {tab}",
+        notify(f"{icon} {tab}",
                " · ".join(x for x in (state, ws, repo) if x), body)
 
     # hook 跑在 cmux 內部，正好拿來當面板的 keepalive（launchd 起的沒有 socket 權限）

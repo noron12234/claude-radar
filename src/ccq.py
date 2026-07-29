@@ -14,7 +14,7 @@ import time
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import cmux_ctx as ctx  # noqa: E402
+import terminal as ctx  # noqa: E402
 
 LOG = os.path.expanduser("~/.claude/cc-done.log")
 
@@ -177,46 +177,27 @@ def render(rows):
 
 
 def jump(row):
-    """跳到某個分頁，並且真的去確認有跳成功。
+    """Focus a tab, then verify it actually happened.
 
-    ctx.run() 失敗時只回空字串，早期版本沒檢查就直接印「跳到…」，
-    結果 socket 被拒時 log 全是假的成功訊息，害人查錯方向。
+    Early versions printed success unconditionally; when the backend refused,
+    the logs were full of lies and sent debugging in the wrong direction.
     """
-    ws, ref = row["workspace"], row["surface"]
-    a = ctx.run([ctx.CMUX, "select-workspace", "--workspace", ws])
-    b = ctx.run([ctx.CMUX, "focus-panel", "--panel", ref, "--workspace", ws])
-
-    ok = False
-    for line in ctx.run([ctx.CMUX, "tree", "--all"]).splitlines():
-        if f"surface {ref} " in line and "[selected]" in line:
-            ok = True
-            break
-
-    if ok:
-        print(f"\033[32m→ 跳到「{row['title']}」\033[0m")
+    if ctx.focus(row):
+        print(f"\033[32m-> {row['title']}\033[0m")
         return
 
-    # 連不上 socket（例如從浮動面板呼叫，它不是活著的 cmux 後代），
-    # 就把請求丟給跑在 cmux 血緣內的 cc_bridge 代勞。
-    #
-    # 寫完要等它真的被消化才返回：面板拿到返回值後才會把 cmux 叫到前景，
-    # 提早返回的話 cmux 會在切換發生前就上來，畫面還停在舊分頁，
-    # 看起來就像「按了沒跳」。
-    req = os.path.expanduser("~/.claude/cc-jump-request")
-    try:
-        with open(req, "w") as f:
-            f.write(ref)
-    except Exception as e:
-        print(f"\033[31m✗ 跳轉失敗「{row['title']}」 {e}\033[0m")
-        return
-
-    for _ in range(40):          # 最多等 4 秒
-        time.sleep(0.1)
-        if not os.path.exists(req):
-            print(f"\033[32m→ 橋接已跳到「{row['title']}」\033[0m")
+    # cmux only: a process that is not a live descendant of the terminal cannot
+    # use the control socket, so hand the request to the bridge instead.
+    if row.get("backend") == "cmux":
+        try:
+            with open(os.path.expanduser("~/.claude/cc-jump-request"), "w") as fh:
+                fh.write(row["surface"])
+            print(f"queued via bridge: {row['title']}")
             return
-    print(f"\033[33m… 請求已排隊「{row['title']}」但橋接沒回應 "
-          f"(select={a!r} focus={b!r})\033[0m")
+        except Exception as exc:
+            print(f"\033[31mfailed: {row['title']} ({exc})\033[0m")
+            return
+    print(f"\033[31mfailed: {row['title']}\033[0m")
 
 
 def main():

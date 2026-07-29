@@ -20,6 +20,8 @@ struct Row: Decodable {
     let active: Bool?      // cmux 的 ◀ active：全域唯一的當前分頁
     let pane: String?      // 屬於哪個分割窗，面板照這個分組
     let panel_id: String?  // cmux terminal UUID，用 AppleScript 直接聚焦
+    let backend: String?   // "cmux" 或 "tmux"，決定用哪條路跳
+    let workspace: String? // tmux 的 session 名稱
 }
 
 enum Style {
@@ -534,7 +536,23 @@ final class Controller: NSObject, NSApplicationDelegate {
     private func jump(_ row: Row) {
         let started = Date()
 
-        if let uuid = row.panel_id, !uuid.isEmpty {
+        // tmux 讓任何行程控制它，沒有 cmux 那種血緣限制，直接下指令即可
+        if row.backend == "tmux", let pane = row.panel_id, !pane.isEmpty {
+            let tmux = Self.tmuxPath
+            if let session = row.workspace, !session.isEmpty {
+                _ = shell([tmux, "switch-client", "-t", session])
+            }
+            _ = shell([tmux, "select-window", "-t", pane])
+            _ = shell([tmux, "select-pane", "-t", pane])
+            lastPayload = ""
+            refresh()
+            log("點擊「\(row.title)」→ tmux 已跳轉 \(Int(Date().timeIntervalSince(started) * 1000))ms")
+            return
+        }
+
+        // cmux：走 AppleScript。它的 socket 只認活著的後代行程，
+        // 但 AppleScript 介面沒有這個限制，孤兒行程照樣能聚焦。
+        if row.backend != "tmux", let uuid = row.panel_id, !uuid.isEmpty {
             let script = NSAppleScript(
                 source: "tell application \"cmux\" to focus terminal id \"\(uuid)\"")
             var err: NSDictionary?
@@ -546,10 +564,10 @@ final class Controller: NSObject, NSApplicationDelegate {
                 log("點擊「\(row.title)」→ AppleScript 已跳轉 \(ms)ms")
                 return
             }
-            log("AppleScript 失敗(\(ms)ms) \(err ?? [:])，改走橋接")
+            log("AppleScript 失敗(\(ms)ms)，改走橋接")
         }
 
-        // 後路：拿不到 UUID 或 AppleScript 失敗時，交給橋接
+        // 後路：拿不到 ID 或上面失敗時，交給橋接
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
             var landed = false
@@ -577,6 +595,16 @@ final class Controller: NSObject, NSApplicationDelegate {
     }
 
     private var requestPath: String { NSHomeDirectory() + "/.claude/cc-jump-request" }
+
+    /// 絕對路徑找 tmux。面板若不是從 shell 啟動（Finder、登入項目），
+    /// PATH 不會包含 Homebrew，`/usr/bin/env tmux` 就會找不到。
+    private static let tmuxPath: String = {
+        for candidate in ["/opt/homebrew/bin/tmux", "/usr/local/bin/tmux", "/usr/bin/tmux"]
+        where FileManager.default.isExecutableFile(atPath: candidate) {
+            return candidate
+        }
+        return "/usr/bin/tmux"
+    }()
 
     private func bringCmuxToFront() {
         panel.resignKey()

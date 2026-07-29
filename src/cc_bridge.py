@@ -21,7 +21,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import cmux_ctx as ctx  # noqa: E402
+import terminal as ctx  # noqa: E402
 import ccq  # noqa: E402
 
 REQUEST = os.path.expanduser("~/.claude/cc-jump-request")
@@ -30,7 +30,7 @@ IDLE_EXIT = 3600  # 一小時沒事做就退場，交給下一個 hook 重啟
 
 
 def socket_ok():
-    return bool(ctx.run([ctx.CMUX, "list-workspaces"]))
+    return bool(ctx.tree())
 
 
 LOG = os.path.expanduser("~/.claude/cc-bridge.log")
@@ -77,13 +77,7 @@ def handle_request():
     before = next((f"{r['surface']} {r['title']}" for r in tree if r.get("active")), "?")
     row = next((r for r in tree if r["surface"] == ref), None)
 
-    ws = row["workspace"] if row else ""
-    if ws:
-        a = ctx.run([ctx.CMUX, "select-workspace", "--workspace", ws])
-        b = ctx.run([ctx.CMUX, "focus-panel", "--panel", ref, "--workspace", ws])
-    else:
-        a = ""
-        b = ctx.run([ctx.CMUX, "focus-panel", "--panel", ref])
+    ok = ctx.focus(row) if row else False
 
     # focus-panel 回來就代表 cmux 已經執行了，這時才放行等待端。
     # 後面的記錄不該擋在點擊延遲上。
@@ -92,7 +86,7 @@ def handle_request():
     except Exception:
         pass
 
-    log(f"跳 {ref} ws={ws or '?'} select={a!r} focus={b!r} | {before} → {active_surface()}")
+    log(f"jump {ref} ok={ok} | {before} -> {active_surface()}")
 
 
 def main():

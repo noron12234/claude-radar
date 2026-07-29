@@ -78,7 +78,9 @@ anything changes, and you lose the muscle memory that makes it fast.
 
 ## Install
 
-Requires macOS, [cmux](https://cmux.dev), and Claude Code.
+Requires macOS, Claude Code, and either [cmux](https://cmux.dev) or [tmux](https://github.com/tmux/tmux). Both are supported at the same time — if you
+run agents in cmux tabs *and* tmux panes, every one of them shows up in the same
+panel, grouped by the split it lives in.
 
 ```bash
 git clone https://github.com/noron12234/claude-radar.git
@@ -111,17 +113,18 @@ stay.
 
 ```
 Claude Code hooks ──▶ ~/.claude/cc-done.log      (what each session is doing)
-cmux session JSON ──▶ tty → terminal UUID        (which tab is which)
+  terminal backend ──▶ tty → tab id               (cmux session JSON / tmux list-panes)
               ps ──▶ CPU per session             (corroboration)
                           │
                           ▼
                   claude-radar panel
                           │  click
                           ▼
-     AppleScript: focus terminal id "<uuid>"     (~50ms)
+  cmux: AppleScript focus  ·  tmux: select-pane   (~50ms)
 ```
 
-Jumping goes through cmux's AppleScript interface rather than its control socket. The
+For tmux this is trivial — any process can drive it. For cmux, jumping goes through
+its AppleScript interface rather than its control socket. The
 socket only accepts processes that are live descendants of the terminal — a
 long-running background panel is an orphan (`PPID 1`) and gets
 `Broken pipe` forever. AppleScript has no such restriction. A helper process
@@ -130,11 +133,10 @@ not depend on it.
 
 ## Limitations
 
-- **macOS only.** The panel is AppKit and jumping is AppleScript.
-- **cmux only, for now.** The terminal-specific parts are confined to
-  `src/cmux_ctx.py` (list tabs, resolve tty → id) and one AppleScript call. tmux
-  should be simpler — it lets any process control it, so the bridge isn't needed at
-  all. PRs welcome.
+- **macOS only.** The panel is AppKit.
+- **cmux and tmux.** Adding a backend means writing one file with three functions
+  (`available()`, `tree()`, `focus()`) — see `src/tmux_ctx.py`, which is 90 lines.
+  iTerm2 and WezTerm both expose enough to make this work. PRs welcome.
 - **Permission detection is string-matching** the notification text, so a wording
   change upstream can turn purple rows orange.
 
