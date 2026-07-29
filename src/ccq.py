@@ -6,6 +6,7 @@
   ccq -w       每 2 秒重刷，當看板掛著
 """
 
+import glob
 import json
 import os
 import subprocess
@@ -86,7 +87,7 @@ BUSY_CPU = 5.0   # 超過就當作正在生成
 
 
 def last_events():
-    """{surface_ref: (時間, 事件, 摘要)} — 每個分頁最後一次通知。"""
+    """{surface_ref: (時間, 事件, 摘要, session_id)} — 每個分頁最後一次通知。"""
     seen = {}
     if not os.path.exists(LOG):
         return seen
@@ -98,8 +99,38 @@ def last_events():
     for line in lines:
         p = line.rstrip("\n").split("\t")
         if len(p) >= 9 and p[2].startswith("surface:"):
-            seen[p[2]] = (p[0], p[1], p[8])
+            seen[p[2]] = (p[0], p[1], p[8], p[7])
     return seen
+
+
+ERROR_SETTLE = 5.0   # 秒；錯誤當下那幾行寫入還算同一筆錯誤，不算回復
+
+
+def recovered_after(session_id, iso):
+    """錯誤之後 transcript 又長出新內容 → 這個 session 已經自己接下去了。
+
+    工具失敗大多是可回復的（分頁 ID 過期、grep 沒中、指令回非零），模型退
+    一步重試就過去了，使用者根本不會察覺。但錯誤是「最後一筆事件」，在下
+    一次 Stop 之前不會被蓋掉，於是分頁被釘成紅色 —— 實測有個分頁在失敗後
+    又正常跑了六分鐘，面板整段時間都在喊出錯。
+
+    transcript 的 mtime 是最直接的證據：錯誤時間點之後還在寫，就是還在動。
+    查不到檔案就回 False —— 驗不掉的錯誤寧可留著顯示。
+    """
+    if not session_id or session_id == "-":
+        return False
+    try:
+        err_ts = datetime.fromisoformat(iso).timestamp()
+    except Exception:
+        return False
+    hits = glob.glob(os.path.expanduser(
+        f"~/.claude/projects/*/{session_id}.jsonl"))
+    if not hits:
+        return False
+    try:
+        return max(os.path.getmtime(h) for h in hits) > err_ts + ERROR_SETTLE
+    except OSError:
+        return False
 
 
 def ago(iso):
@@ -130,7 +161,7 @@ def collect():
         if s["type"] != "terminal":
             continue
         ref = s["surface"]
-        ts, kind, summary = events.get(ref, ("", "", ""))
+        ts, kind, summary, sid = events.get(ref, ("", "", "", ""))
         cpu = running.get(s["tty"], 0.0)
 
         # 狀態是「這個分頁現在處於什麼情況」，不是「有沒有讀過通知」。
@@ -147,15 +178,16 @@ def collect():
         # 的情況（/loop、goal hook 續跑、背景任務回來）。
         if s["tty"] not in running:
             state = "noclaude"          # 分頁開著但裡面沒跑 Claude
-        elif kind == "error":
+        elif kind == "error" and not recovered_after(sid, ts):
             # 出錯要壓過 CPU 判定：工具失敗後行程往往還在忙著善後，
             # 只看 CPU 會一直顯示「在跑」，錯誤就永遠不會浮出來。
+            # 但「善後成功」也是這樣，所以先問 transcript 有沒有繼續長。
             state = "error"
         elif cpu >= BUSY_CPU:
             state = "busy"
-        elif kind == "start":
-            state = "busy"
-        elif kind in ("error", "permission", "waiting", "done"):
+        elif kind in ("start", "error"):
+            state = "busy"              # 回復掉的錯誤跟 start 一樣，就是在跑
+        elif kind in ("permission", "waiting", "done"):
             state = kind
         elif s["busy"]:
             state = "busy"
