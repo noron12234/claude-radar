@@ -115,6 +115,12 @@ defaults write claude-panel dayStartHour 0   # true midnight; any hour 0-23
 The stretch counter on the left does not reset at the day boundary: it drives the
 eye-break reminder, and crossing midnight is not a rest.
 
+Time when the panel wasn't running does not count as work. The panel writes a
+heartbeat every second, so on startup it can tell working time from the gap that
+followed — otherwise reopening it the next morning credited you with the whole
+night. A gap of 5 minutes or more also counts as a rest for your eyes and clears
+the stretch counter; anything shorter (a crash, a restart) does not.
+
 After 20 minutes of continuous work the row turns yellow. Click it and the session
 list dims to 18% for a 20-second countdown — look away from the screen — then the
 stretch counter resets and work time starts again on its own. The dimming is

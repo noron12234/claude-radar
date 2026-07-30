@@ -273,6 +273,10 @@ final class WorkTimer {
     static let breakAfter: TimeInterval = 20 * 60   // 20-20-20 法則
     static let breakLength: TimeInterval = 20       // 看遠方 20 秒
 
+    /// 面板缺席超過這麼久，就當眼睛已經休息過，左邊那段連續工時重新計。
+    /// 比這短的（hook 重啟面板、當掉後幾秒內復活）不算休息。
+    static let downtimeCountsAsRest: TimeInterval = 5 * 60
+
     enum Phase { case working, paused, breakDue, resting }
 
     private let d = UserDefaults.standard
@@ -280,11 +284,21 @@ final class WorkTimer {
     private let kSegment = "timerSegment"   // 這一段連續工作（左邊，休息後歸零）
     private let kStarted = "timerStarted"
     private let kRestUntil = "timerRestUntil"
-    private let kDay = "timerDay"           // kTotal 現在算的是哪一天
+    private let kDay = "timerDay"            // kTotal 現在算的是哪一天
+    private let kSeen = "timerSeen"          // 面板最後一次還活著的時間（心跳）
+
+    init() {
+        reconcileDowntime()
+    }
 
     private var started: Date? {
         get { d.object(forKey: kStarted) as? Date }
-        set { d.set(newValue, forKey: kStarted) }
+        set {
+            d.set(newValue, forKey: kStarted)
+            // 開始計時的同時就補一次心跳，否則「繼續」之後馬上被 kill，
+            // 重開時會拿到暫停前的舊心跳，把這段誤判成空窗。
+            if newValue != nil { d.set(Date(), forKey: kSeen) }
+        }
     }
 
     private var restUntil: Date? {
@@ -326,6 +340,32 @@ final class WorkTimer {
         var t = d.double(forKey: kSegment)
         if let s = started { t += Date().timeIntervalSince(s) }
         return t
+    }
+
+    /// 心跳。每秒被呼叫，只在計時中才寫 —— 停著的時候本來就沒有工時要保護。
+    func heartbeat() {
+        guard started != nil else { return }
+        d.set(Date(), forKey: kSeen)
+    }
+
+    /// 面板沒在跑的那段時間不能算工時。`started` 是持久值，所以隔夜重開會把
+    /// 面板關著的十幾個小時全部算成工作 —— 右邊爆掉、左邊直接卡在黃色「該休息了」。
+    ///
+    /// 開機時呼叫一次：心跳之前的算工作、心跳到現在的空窗丟掉，計時從現在重新起算。
+    private func reconcileDowntime() {
+        guard let s = started else { return }        // 本來就停著 → 沒有空窗問題
+        let seen = d.object(forKey: kSeen) as? Date
+        // 沒有心跳（舊版升上來、或 plist 被清過）就整段丟掉，寧可少算也不要虛報。
+        let worked = max(0, (seen ?? s).timeIntervalSince(s))
+        let downtime = Date().timeIntervalSince(seen ?? s)
+
+        d.set(d.double(forKey: kTotal) + worked, forKey: kTotal)
+        if downtime >= Self.downtimeCountsAsRest {
+            d.set(0.0, forKey: kSegment)             // 離開夠久 → 眼睛休息過了
+        } else {
+            d.set(d.double(forKey: kSegment) + worked, forKey: kSegment)
+        }
+        started = Date()   // setter 會順手補心跳
     }
 
     /// 幾點算換日。跨半夜工作是常態，凌晨兩點把當天工時清掉只會讓右邊那個數字沒意義，
@@ -504,6 +544,7 @@ final class TimerRow: NSView {
     func refresh() -> Bool {
         timer.rolloverIfNewDay()
         timer.settleIfRestFinished()
+        timer.heartbeat()
 
         totalLabel.stringValue = L.t("today ", "今日 ") + WorkTimer.format(timer.total)
         time.stringValue = WorkTimer.format(timer.segment)
