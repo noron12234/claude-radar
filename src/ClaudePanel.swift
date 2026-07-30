@@ -276,10 +276,11 @@ final class WorkTimer {
     enum Phase { case working, paused, breakDue, resting }
 
     private let d = UserDefaults.standard
-    private let kTotal = "timerTotal"       // 累積總工時（右邊那一區）
+    private let kTotal = "timerTotal"       // 今日總工時（右邊那一區，換日歸零）
     private let kSegment = "timerSegment"   // 這一段連續工作（左邊，休息後歸零）
     private let kStarted = "timerStarted"
     private let kRestUntil = "timerRestUntil"
+    private let kDay = "timerDay"           // kTotal 現在算的是哪一天
 
     private var started: Date? {
         get { d.object(forKey: kStarted) as? Date }
@@ -300,7 +301,7 @@ final class WorkTimer {
         return t
     }
 
-    /// 累積總工時，休息與暫停都不算。
+    /// 今天的總工時，休息與暫停都不算。
     var total: TimeInterval {
         var t = d.double(forKey: kTotal)
         if phase == .working || phase == .breakDue, let s = started {
@@ -325,6 +326,38 @@ final class WorkTimer {
         var t = d.double(forKey: kSegment)
         if let s = started { t += Date().timeIntervalSince(s) }
         return t
+    }
+
+    /// 幾點算換日。跨半夜工作是常態，凌晨兩點把當天工時清掉只會讓右邊那個數字沒意義，
+    /// 所以預設 04:00 才算新的一天。`defaults write claude-panel dayStartHour 0` 可以改成真正的午夜。
+    private var dayStartHour: Int {
+        guard d.object(forKey: "dayStartHour") != nil else { return 4 }
+        return min(23, max(0, d.integer(forKey: "dayStartHour")))
+    }
+
+    /// 現在屬於哪一天（已經把換日時間算進去）
+    private var todayKey: String {
+        let shifted = Date().addingTimeInterval(-Double(dayStartHour) * 3600)
+        let c = Calendar.current.dateComponents([.year, .month, .day], from: shifted)
+        return String(format: "%04d-%02d-%02d", c.year ?? 0, c.month ?? 0, c.day ?? 0)
+    }
+
+    /// 換日就把今日工時歸零重新計。與 settleIfRestFinished 一樣每秒被呼叫一次，
+    /// 所以不需要排程，面板關著的那幾天也會在下次開起來時一次結清。
+    ///
+    /// 只歸零右邊的今日工時 —— 左邊那一段連續工時是給眼睛用的，
+    /// 跨過半夜不代表眼睛休息過，硬歸零會讓該提醒的休息被跳掉。
+    func rolloverIfNewDay() {
+        let today = todayKey
+        guard d.string(forKey: kDay) != today else { return }
+        d.set(today, forKey: kDay)
+        if let s = started {
+            // 正在計時中跨日：換日前的那一段留給昨天，只把它併進連續工時，
+            // 今日工時從 0 重新起算。
+            d.set(d.double(forKey: kSegment) + Date().timeIntervalSince(s), forKey: kSegment)
+            started = Date()
+        }
+        d.set(0.0, forKey: kTotal)
     }
 
     /// 休息時間到了就自動收工、歸零、重新開始計這一段。
@@ -388,6 +421,7 @@ final class WorkTimer {
     func reset() {
         d.set(0.0, forKey: kTotal)
         d.set(0.0, forKey: kSegment)
+        d.set(todayKey, forKey: kDay)
         started = nil
         restUntil = nil
     }
@@ -468,9 +502,10 @@ final class TimerRow: NSView {
     /// 每秒呼叫。回傳「是否處於休息中」，面板用它決定要不要把整個視窗調暗。
     @discardableResult
     func refresh() -> Bool {
+        timer.rolloverIfNewDay()
         timer.settleIfRestFinished()
 
-        totalLabel.stringValue = L.t("total ", "累計 ") + WorkTimer.format(timer.total)
+        totalLabel.stringValue = L.t("today ", "今日 ") + WorkTimer.format(timer.total)
         time.stringValue = WorkTimer.format(timer.segment)
 
         let running = timer.isRunning

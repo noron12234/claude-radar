@@ -101,8 +101,19 @@ Also included: `ccq`, a terminal version of the same board.
 
 ## Work timer
 
-The bottom row shows the current stretch of work on the left and your accumulated
-total on the right. Click to pause, click again to resume, option-click to reset.
+The bottom row shows the current stretch of work on the left and today's total on
+the right. Click to pause, click again to resume, option-click to reset.
+
+The total starts over on a new day. Because working past midnight is the norm, the
+day rolls over at 04:00 rather than at midnight — so a 1 a.m. session still counts
+towards the evening it belongs to. Move the boundary with:
+
+```bash
+defaults write claude-panel dayStartHour 0   # true midnight; any hour 0-23
+```
+
+The stretch counter on the left does not reset at the day boundary: it drives the
+eye-break reminder, and crossing midnight is not a rest.
 
 After 20 minutes of continuous work the row turns yellow. Click it and the session
 list dims to 18% for a 20-second countdown — look away from the screen — then the
